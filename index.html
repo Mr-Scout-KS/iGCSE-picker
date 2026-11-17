@@ -616,6 +616,7 @@ async function makePDF(){
       questions:rows.length, marks:rows.reduce((s,r)=>s+r.m,0),
       minutes:Math.round(rows.reduce((s,r)=>s+r.m,0)/CFG.pace),
       blank_pages_removed:noGaps, space:space, mark_scheme:wantMS,
+      filter_label:filterTags(rows).map(t=>t.l).join(' · ')||null,
       filters:{
         chapters_selected:[...chSel], sections_selected:[...secSel], chapter_mode:document.getElementById('cmode').value,
         year_from:document.getElementById('yf').value||null,
@@ -634,17 +635,15 @@ async function makePDF(){
               units:manifest.units, chapters:manifest.chapters,
               questions:rows.length, marks:manifest.marks,
               mark_scheme:wantMS, compact:noGaps,
+              filters:filterTags(rows).map(t=>t.l).join(' · ')||null,
               ids:rows.map(r=>r.id)});
     renderLog();
     publish(outputs);
-    // a finished bundle leaves a clean slate - the next one starts from
-    // nothing, not from this one's ticks (the history can bring them back)
-    sel.clear(); MOCK_ORDER=[]; render();
     pdfnote('<b style="color:var(--ok)">Έτοιμο.</b> '+rows.length+' ερωτήσεις · '
             +kind+' · serial <b>'+SERIAL+'</b><br><code>'+STEM+'</code>'
             +'<br><span class="muted">από '+rows[0].s+' Q'+rows[0].q+' έως '
             +rows[rows.length-1].s+' Q'+rows[rows.length-1].q+'</span>'
-            +'<br><span class="muted">Η επιλογή καθαρίστηκε για το επόμενο. Για να ξαναφέρεις αυτές τις ερωτήσεις: Ιστορικό → Φόρτωσε.</span>');
+            +(filterTags(rows).length?'<br><span class="muted">Ρυθμίσεις: '+esc(filterTags(rows).map(t=>t.l).join(' · '))+'</span>':''));
   }catch(e){ pdfnote('Σφάλμα: '+e.message); }
   document.getElementById('mkpdf').disabled=false;
 }
@@ -716,7 +715,8 @@ function stem(rows, when, kind){
                            [...new Set(rows.map(r=>r.u))]).sort(chapCmp);
   // a mock across the whole course would otherwise name thirty chapters
   const chs=chl.length>6 ? chl.slice(0,4).join('-')+'-and-'+(chl.length-4)+'-more' : chl.join('-');
-  return us+'_'+CFG.chp+chs+'_'+rows.length+'q_'+kind+'_'+stamp(when);
+  const ft=filterTags(rows).map(t=>t.s).filter(Boolean).join('_');
+  return us+'_'+CFG.chp+chs+(ft?'_'+ft:'')+'_'+rows.length+'q_'+kind+'_'+stamp(when);
 }
 // Two different exports inside the same minute would otherwise be handed the same
 // name and the browser would start numbering again - the very thing this is meant
@@ -1196,7 +1196,13 @@ async function cover(doc, rows, which, serial){
   put(title,B,tsz,y); y-=20;
   put(uni?'Κρυφό Σχολειό':'Krifo Scholeio',F,12,y); y-=20;
   put(rows.length+' questions · '+marks+' marks · ~'+mins+' min · '
-      +({FULL:'full chapter',TEST:'test preparation'}[bundleKind()]||'custom selection'),F,11,y); y-=26;
+      +({FULL:'full chapter',TEST:'test preparation'}[bundleKind()]||'custom selection'),F,11,y); y-=16;
+  // the settings it was made with
+  { const ft=filterTags(rows).map(t=>t.l);
+    if(ft.length){ let line='Filters: '+ft.join(' · ');
+      while(line && F.widthOfTextAtSize(clean(line),9.5)>W-112) line=line.slice(0,-2)+'…';
+      put(line,F,9.5,y,56,PDFLib.rgb(.54,.20,.14)); y-=14; } }
+  y-=10;
   // The serial goes top right, big enough to read off a sheet a student is holding
   if(serial){
     page.drawText(serial,{x:W-56-B.widthOfTextAtSize(serial,13),y:H-42,size:13,font:B,
@@ -1309,6 +1315,31 @@ function hiddenNote(){
 // question ticked earlier and since hidden - another module, a filter, a
 // section - stays ticked (it comes back when the filter does) but is not
 // exported: what you see is what you get.
+// The settings a bundle was made with, so the files say so: the sections,
+// the difficulty range, the years, the kind of question, a search. [{s, l}]:
+// s for the file name, l for the cover and the history.
+function filterTags(rows){
+  const out=[], units=new Set((rows||selRows()).map(r=>r.u));
+  const secs=[...secSel].filter(x=>units.has(x.split('|')[0])).map(x=>x.split('|')[1])
+    .sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  if(secs.length) out.push({s:'s'+secs.join('+'),
+    l:(secs.length>1?'Sections ':'Section ')+secs.map(c=>{ const u=[...units].find(u=>SECNAME[u+'|'+c]);
+        return c+(u?' '+SECNAME[u+'|'+c]:''); }).join(', ')});
+  const a=+document.getElementById('dmin').value, b=+document.getElementById('dmax').value;
+  if(a>1 || b<5) out.push({s:'D'+(a===b?a:a+'-'+b), l:'Difficulty '+(a===b?a:a+'–'+b)+' (of 1–5)'});
+  const yf=document.getElementById('yf').value, yt=document.getElementById('yt').value;
+  if(yf||yt) out.push({s:(yf||'')+'-'+(yt||''), l:'Years '+(yf||'…')+'–'+(yt||'…')});
+  const md=document.getElementById('cmode').value;
+  const ML={single:['single','single-topic questions only'],multi:['multi','multi-topic questions only'],
+            any:['any','questions touching the chapter'],combo:['combo','combined chapters only']};
+  if(ML[md]) out.push({s:ML[md][0], l:ML[md][1]});
+  const tm=document.getElementById('tmode').value;
+  if(tm==='mask') out.push({s:'masked', l:'parts of other chapters greyed out'});
+  if(tm==='drop') out.push({s:'', l:'questions with parts of other chapters left out'});
+  const q=document.getElementById('q').value.trim();
+  if(q) out.push({s:'', l:'search "'+q+'"'});
+  return out;
+}
 function selRows(){
   const on=(uSel.size || document.getElementById('q').value.trim().length>1);
   if(!on) return [];
@@ -1620,11 +1651,13 @@ function tray(){
   if(!rs.length){ kt.textContent=''; kt.className='kind'; }
   else{
     const sc=bundleScope(), full=sc&&sc.whole;
-    if(bundleKind()==='TEST'){ kt.textContent='TEST · '+rs.length+' ερωτήσεις'; kt.className='kind test'; return; }
+    if(bundleKind()==='TEST'){ const ft=filterTags(rs).map(t=>t.l);
+      kt.textContent='TEST · '+rs.length+' ερωτήσεις'+(ft.length?' · '+ft.join(' · '):''); kt.className='kind test'; return; }
     kt.textContent = full ? 'FULL · ολόκληρο '+CFG.chp+sc.c
                    : sc ? 'CUSTOM · '+rs.length+' από '
                           +DATA.filter(r=>r.u===sc.u&&chapWhole(r.ck)===sc.c).length+' του '+CFG.chp+sc.c
                         : 'CUSTOM';
+    { const ft=filterTags(rs).map(t=>t.l); if(ft.length) kt.textContent+=' · '+ft.join(' · '); }
     kt.className='kind'+(full?' full':'');
   }
 }
@@ -1641,7 +1674,7 @@ function renderLog(){
     +rows.slice(0,60).map((e,i)=>{
       const d=new Date(e.built);
       return `<tr><td><b>${e.serial}</b></td><td>${esc(e.for||'—')}</td>`
-        +`<td>${e.units.join(',')} ${CFG.chp}${e.chapters.join('-')} <span class="muted">${e.kind}`
+        +`<td>${e.units.join(',')} ${CFG.chp}${e.chapters.join('-')} <span class="muted">${e.kind}${e.filters?' · '+esc(e.filters):''}`
         +`${e.mark_scheme?'':' · χωρίς MS'}${e.compact?' · compact':''}</span></td>`
         +`<td class="num">${e.questions}</td>`
         +`<td class="muted">${d.toLocaleDateString()} ${String(d.getHours()).padStart(2,'0')}:`
